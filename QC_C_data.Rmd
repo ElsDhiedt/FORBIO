@@ -1,0 +1,117 @@
+---
+title: "QC of FORBIO C data"
+author: "Els Dhiedt"
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+## Prepare environment
+
+```{r packages}
+library(tidyverse) #data wranglin
+library(readxl) #reading xlsx files
+library(flextable) #pretty tables
+```
+
+```{r path}
+#folder with C data
+in_path <- "C:/Users/elsdhi/OneDrive - UKCEH/Documents/UGent/TreeDivNet/output data/"
+
+#versioning
+date <- "20241106"
+
+#file name
+filename <- paste0("C_data_for_Elina_", date, ".csv")
+
+#MFC and drforest data
+#to find out which plots we are expecting missing data
+#veg cover
+#MFC
+MFC_veg_path <- paste0(data_path, "FORBIO_MixForChange_understorey vegetation_2021.xlsx")
+sheet_name_mfc <- "Raw data"
+#DrForest
+drforest_veg_path <- paste0(data_path, "FORBIO_DrForest_understorey vegetation_2021.xlsx")
+sheet_name_drforest <- "Raw data"
+
+#litter
+litter_path <- paste0(data_path, "Leaf_litter_biomass_2021.xlsx")
+sheet_name_litter <- "Raw data_all"
+```
+
+Load data
+
+```{r}
+#data to QC
+data_raw <- read.csv(paste0(in_path, filename))
+
+#to check VIP plots
+#veg cover
+#MFC
+MFC_veg_raw <- read_excel(MFC_veg_path, sheet = sheet_name_mfc)
+#DrForest
+drforest_veg_raw <- read_excel(drforest_veg_path, sheet = sheet_name_drforest)
+
+#litter
+litter_raw <- read_excel(litter_path, sheet = sheet_name_litter)
+```
+
+## QC
+
+```{r}
+variables <- names(data_raw)
+format <- sapply(data_raw, FUN = class)
+nas <- sapply(data_raw, function(x) sum(is.na(x)))
+min <- rep(NA, length(variables))
+min[format %in% c("integer", "numeric")] <- sapply(data_raw[,format %in% c("integer", "numeric")], function(x) min(x, na.rm = T))
+max <- rep(NA, length(variables))
+max[format %in% c("integer", "numeric")] <- sapply(data_raw[,format %in% c("integer", "numeric")], function(x) max(x, na.rm = T))
+
+qa_table <- data.frame(variable = variables,
+                       format = format,
+                       n_NA = nas,
+                       min = min,
+                       max = max)
+
+flextable::flextable(qa_table)
+```
+
+```{r}
+#some histograms
+
+data_raw %>%
+  dplyr::select(Site, names(data_raw[,format %in% c("integer", "numeric")])) %>%
+  pivot_longer(cols = names(data_raw[,format %in% c("integer", "numeric")]), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram() +
+  facet_wrap(~variable, scales = "free")
+```
+
+Check non-VIP plots are indeed NA
+
+```{r}
+#vegetation VIP plot ids
+MFC_veg_IDs <- paste0(MFC_veg_raw$Site, MFC_veg_raw$Plot) %>% unique()
+drforest_veg_IDs <- paste0(drforest_veg_raw$Site, drforest_veg_raw$Plot) %>% unique()
+veg_IDs <- c(MFC_veg_IDs, drforest_veg_IDs) %>% unique()
+
+#litter VIP plot ids
+litter_IDs <- paste0(litter_raw$Site, litter_raw$Plot_ID) %>% unique()
+
+
+#compare data_raw
+data <- data_raw
+#add ID
+data <- data %>%
+  mutate(Plot_ID = paste0(case_when(Site == "Gedinne" ~ "GE",
+                             Site == "Hechtel-Eksel" ~ "HE",
+                             Site == "Zedelgem" ~ "ZE"), plot_number))
+#veg
+(data$Plot_ID[!is.na(data$groundcover_biomass)] %in% veg_IDs) %>% all()
+!(data$Plot_ID[is.na(data$groundcover_biomass)] %in% veg_IDs) %>% all()
+
+#litter
+(data$Plot_ID[!is.na(data$litter_quanity)] %in% litter_IDs) %>% all()
+!(data$Plot_ID[is.na(data$litter_quantity)] %in% litter_IDs) %>% all()
+```
+
+
