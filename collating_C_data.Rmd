@@ -1,0 +1,653 @@
+---
+title: "Collating Carbon data for FORBIO"
+author: "Els Dhiedt"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Prepare environment
+
+```{r packages}
+library(tidyverse) #data wranglin
+library(readxl) #reading xlsx files
+```
+
+```{r path}
+#folder where data sits
+data_path <- "C:/Users/elsdhi/OneDrive - UKCEH/Documents/UGent/TreeDivNet/data/"
+
+#soil analyses
+file_path <- paste0(data_path, "Bodemanalysen.xlsx")
+sheet_name <- "Raw data"
+
+#phytocalc coefficients - see https://doi.org/10.1007/s10342-010-0362-7 for more information
+phytocalc_path <- paste0(data_path, "PhytoCalc_coefficients.csv")
+
+#basal area data
+file_paths_BA <- paste0(data_path, "size_2019.xlsx")
+
+#veg cover
+#MFC
+MFC_veg_path <- paste0(data_path, "FORBIO_MixForChange_understorey vegetation_2021.xlsx")
+sheet_name_mfc <- "Raw data"
+#DrForest
+drforest_veg_path <- paste0(data_path, "FORBIO_DrForest_understorey vegetation_2021.xlsx")
+sheet_name_drforest <- "Raw data"
+
+#litter
+litter_path <- paste0(data_path, "Leaf_litter_biomass_2021.xlsx")
+sheet_name_litter <- "Raw data_all"
+
+#tree size raw
+HE_tree_path <- paste0(data_path, "Growth_Measurement_RawDATA_HE-Survey_2019.xlsx")
+sheet_name_treeHE <- "Raw Data (value)"
+#2016 data for correct plot ids
+HE_tree_2016_path <- paste0(data_path, "Tree size Hechtel-Eksel 2016.xlsx")
+sheet_name_tree2016HE <- "Data"
+
+GE_tree_path <- paste0(data_path, "Tree size Gedinne 2018.xlsx")
+sheet_name_treeGE <- "Data"
+
+ZE_tree_path <- paste0(data_path, "Tree size Zedelgem 2018.xlsx")
+sheet_name_treeZE <- "data"
+
+#allometric coefficients
+#HE - saplings
+allo_coef_path <- paste0(data_path, "Annighöfer_2016_allometric_coefficients.csv")
+
+#ZE GE
+allo_coef_mat_path <- paste0(data_path, "Forrester_2017_allometric_coeff.xlsx")
+sheet_name_allo <- "Table A.5"
+```
+
+```{r load-data}
+#load data
+#soil
+data_raw <- read_excel(file_path, sheet = sheet_name)
+
+#phytocalc coefficients
+phytocalc <- read.csv(phytocalc_path)
+
+#basal area
+BA_raw <- read_excel(file_paths_BA, sheet = "Data")
+
+#veg cover
+#MFC
+MFC_veg_raw <- read_excel(MFC_veg_path, sheet = sheet_name_mfc)
+#DrForest
+drforest_veg_raw <- read_excel(drforest_veg_path, sheet = sheet_name_drforest)
+
+#litter
+litter_raw <- read_excel(litter_path, sheet = sheet_name_litter)
+
+#tree size raw
+HE_tree_raw <- read_excel(HE_tree_path, sheet = sheet_name_treeHE)
+GE_tree_raw <- read_excel(GE_tree_path, sheet = sheet_name_treeGE)
+ZE_tree_raw <- read_excel(ZE_tree_path, sheet = sheet_name_treeZE, na = "NA")
+#2016
+HE2016_tree_raw <- read_excel(HE_tree_2016_path, sheet = sheet_name_tree2016HE, na = "NA")
+
+#allometric coefficients
+allo_coef <- read.csv(allo_coef_path)
+allo_mat_coef <- read_excel(allo_coef_mat_path, sheet = sheet_name_allo)
+```
+
+## Data processing
+
+```{r}
+#correction to data
+#GE tree data
+GE_tree_raw <- GE_tree_raw %>%
+  filter(Tree_ID!="4989") %>%
+  filter(Tree_ID!="6853")
+```
+
+
+### Treatments
+
+```{r}
+#treatments
+data <- data_raw %>%
+  mutate(plot_number = gsub("Ze|Ge|He", "", Plot_ID),
+         treatment = case_when(grepl("prov", composition_ID) & Site == "Zedelgem" ~ paste0(composition_ID, " oak"),
+                               grepl("prov", composition_ID) & Site == "Gedinne" ~ paste0(composition_ID, " beech"),
+                               plot_number == "0" ~ "natural regeneration"))
+```
+
+### Species composition
+
+```{r}
+#species composition
+species_comp <- data %>%
+  mutate(year_ID = paste0(Year, Plot_ID)) %>%
+  pivot_longer(cols = c("beech", "oak", "birch", "lime", "pine", "larch", "maple", "Douglas"), names_to = "species", values_to = "presence") %>%
+  mutate(latin = case_when(species == "beech" ~ "Fagus silvatica",
+                           species == "birch" ~ "Betula pendula",
+                           (species == "oak" & Site == "Zedelgem") ~ "Quercus robur",
+                           (species == "oak" & Site %in% c("Gedinne", "Hechtel-Eksel")) ~ "Quercus petraea",
+                           (species == "larch" & Site == "Gedinne") ~ "Larix x eurolepis",
+                           (species == "larch" & Site == "Hechtel-Eksel") ~ "Larix kaempferi",
+                           species == "maple" ~ "Acer pseudoplatanus",
+                           species == "Douglas" ~ "Pseudotsuga menziesii",
+                           species == "lime" ~ "Tilia cordata",
+                           species == "pine" ~ "Pinus silvestris")) %>%
+  filter(presence == 1) %>%
+  group_by(year_ID) %>%
+  nest() %>%
+  mutate(species_composition_words = map_chr(data, ~paste0(.x$latin, collapse = " & ")))
+```
+
+### Tree measurements
+
+First correct the incorrect rows in HE2019
+
+```{r}
+#hechtel eksel
+#BA
+#the trees and plot IDs are mixed up in 2019 data.
+#use 2016 data to re-identify trees to their plot (assuming the tree IDs are correct, but plotnr is incorrect)
+#similarly re-identify genus-id based on 
+BA_HE_corrected <- HE_tree_raw %>%
+  mutate(Plot_ID_corrected = HE2016_tree_raw$Plot_ID[match(Tree_ID, HE2016_tree_raw$Tree_ID)],
+         Genus_ID_corrected = HE2016_tree_raw$Genus_ID[match(Tree_ID, HE2016_tree_raw$Tree_ID)],
+         Xrow_correct = HE2016_tree_raw$Xrow[match(Tree_ID, HE2016_tree_raw$Tree_ID)],
+         Yrow_correct = HE2016_tree_raw$Yrow[match(Tree_ID, HE2016_tree_raw$Tree_ID)])
+
+#all Xrow is fine
+BA_HE_corrected[BA_HE_corrected$Xrow != BA_HE_corrected$Xrow_correct ,] %>% filter(!is.na(Xrow)) %>% dplyr::select(-c(Diameter_2019,Site, Height_2019, `death/missing`)) %>% View()
+
+measured_trees_2019 <- HE_tree_raw$Tree_ID[!is.na(HE_tree_raw$Xrow)]
+measured_trees_2016 <- HE2016_tree_raw$Tree_ID
+
+#tree numbers seem correct
+measured_trees_2016[!(measured_trees_2016 %in% measured_trees_2019)]
+measured_trees_2019[!(measured_trees_2019 %in% measured_trees_2016)]
+
+#test where Genus is not same
+BA_HE_corrected[BA_HE_corrected$Genus_ID != BA_HE_corrected$Genus_ID_corrected ,] %>% filter(!is.na(Genus_ID)) %>% dplyr::select(-c(Diameter_2019,Site, Height_2019, `death/missing`)) %>% View()
+#compared to plot maps
+#all correct except for 22349: plot 39 Douglas
+
+BA_HE_corrected[BA_HE_corrected$Plot_ID != BA_HE_corrected$Plot_ID_corrected ,] %>% filter(!is.na(Plot_ID)) %>% dplyr::select(-c(Diameter_2019,Site, Height_2019, `death/missing`)) %>% View()
+#compared to plot maps
+#22349: plot 39 Douglas
+#2142: plot 4 Betula
+#2131: plot 4 Quercus
+
+#will assume tree ID is correct but other data is incorrect if not the same as the plot maps
+BA_HE_corrected <- HE_tree_raw
+BA_HE_corrected$Plot_ID[BA_HE_corrected$Tree_ID == 22349] <- 39
+BA_HE_corrected$Genus_ID[BA_HE_corrected$Tree_ID == 22349] <- "Pseudotsuga"
+BA_HE_corrected$Plot_ID[BA_HE_corrected$Tree_ID == 2142] <- 4
+BA_HE_corrected$Plot_ID[BA_HE_corrected$Tree_ID == 2131] <- 4
+
+
+```
+
+Calculate BA
+
+```{r}
+#plot size of plots
+plot_size_he_ha <- 36 * 36 / 100 / 100
+plot_size_geze_ha <- 42 * 42 / 100 / 100
+
+BA_HE <- BA_HE_corrected %>%
+  group_by(Plot_ID, Genus_ID) %>%
+  summarise(BA_per_tree_m = mean((Diameter_2019/2/1000) ^ 2 * pi, na.rm = T), n_tree = sum(!is.na(Diameter_2019), na.rm = T)) %>%
+  mutate(Site = "HE")
+
+#replace NA with 0 for the dead trees
+
+BA_ZE <- ZE_tree_raw %>%
+  group_by(Plot_ID, Genus_ID) %>%
+  mutate(`DBH_2018 (mm)` = ifelse(is.na(`DBH_2018 (mm)`), 0, `DBH_2018 (mm)`)) %>%
+  summarise(BA_per_tree_m = mean((`DBH_2018 (mm)`/2/1000) ^ 2 * pi, na.rm = T), n_tree = sum(!is.na(`DBH_2018 (mm)`), na.rm = T)) %>%
+  mutate(Site = "ZE")
+
+BA_GE <- GE_tree_raw %>%
+  group_by(Plot_ID, Genus_ID) %>%
+  mutate(`DBH_2019` = ifelse(is.na(`DBH_2019`), 0, `DBH_2019`)) %>%
+  summarise(BA_per_tree_m = mean((`DBH_2019`/2/1000) ^ 2 * pi, na.rm = T), n_tree = sum(!is.na(`DBH_2019`), na.rm = T)) %>%
+  mutate(Site = "GE")
+
+#calculate BA (m2 / ha)
+BA_full <- rbind(BA_HE, BA_ZE, BA_GE) %>%
+  dplyr::select(-n_tree) %>%
+  pivot_wider(names_from = Genus_ID, values_from = BA_per_tree_m) %>%
+  mutate(across(Betula:Acer, ~ifelse(is.na(.), 0, .))) %>%
+  mutate(Plot_ID_long = case_when(Site == "ZE" ~ paste0("Ze", Plot_ID),
+                                  Site == "HE" ~ paste0("He", Plot_ID),
+                                  Site == "GE" ~ paste0("Ge", Plot_ID))) %>%
+  merge(data_raw[data_raw$Time=="old",] %>% dplyr::select(Plot_ID, contains("#")), by.x = "Plot_ID_long", by.y = "Plot_ID", all.x = T, all.y = F) %>%
+  mutate(BA_Betula = Betula * `#_birch`,
+         BA_Pinus = Pinus * `#_pine`,
+         BA_Pseudotsuga = Pseudotsuga * `#_Douglas`,
+         BA_Quercus = Quercus * `#_oak`,
+         BA_Larix = Larix * `#_larch`,
+         BA_Fagus = Fagus * `#_beech`,
+         BA_Tilia = Tilia * `#_lime`,
+         BA_Acer = Acer * `#_maple`) %>%   
+  #calculate per ha
+  dplyr::select(Plot_ID_long, Plot_ID, Site, BA_Betula:BA_Acer) %>%
+  pivot_longer(cols = BA_Betula:BA_Acer, names_to = "Genus", values_to = "BA_m2_plot_total") %>%
+  mutate(BA_m2_ha_total = case_when(Site == "HE" ~ BA_m2_plot_total / plot_size_he_ha,
+                                             Site %in% c("GE", "ZE") ~ BA_m2_plot_total / plot_size_geze_ha)) %>%
+  dplyr::select(-BA_m2_plot_total) %>%
+  pivot_wider(names_from = Genus, values_from = BA_m2_ha_total) %>%
+  group_by(Plot_ID, Site) %>%
+  mutate(BA_m2_ha_total = sum(BA_Betula, BA_Pinus, BA_Pseudotsuga, BA_Quercus, BA_Larix, BA_Fagus, BA_Tilia, BA_Acer))
+
+
+```
+
+Biomass in HE
+
+```{r}
+
+#some of the trees too big for the range, a lot of conifers too big..
+summary(HE_tree_raw$Diameter_2019[HE_tree_raw$Genus_ID == "Betula"]) #132
+sum((HE_tree_raw$Diameter_2019[HE_tree_raw$Genus_ID == "Betula"]/10)^2*HE_tree_raw$Height_2019[HE_tree_raw$Genus_ID == "Betula"] > 253599, na.rm=T) #6
+summary(HE_tree_raw$Diameter_2019[HE_tree_raw$Genus_ID == "Quercus"]) #201
+sum((HE_tree_raw$Diameter_2019[HE_tree_raw$Genus_ID == "Quercus"]/10)^2*HE_tree_raw$Height_2019[HE_tree_raw$Genus_ID == "Quercus"] > 16,366, na.rm=T) #1240
+summary(HE_tree_raw$Diameter_2019[HE_tree_raw$Genus_ID == "Larix"]) #772
+sum((HE_tree_raw$Diameter_2019[HE_tree_raw$Genus_ID == "Larix"]/10)^2*HE_tree_raw$Height_2019[HE_tree_raw$Genus_ID == "Larix"] > 8977, na.rm=T) # 557
+summary(HE_tree_raw$Diameter_2019[HE_tree_raw$Genus_ID == "Pseudotsuga"]) #114
+sum((HE_tree_raw$Diameter_2019[HE_tree_raw$Genus_ID == "Pseudotsuga"]/10)^2*HE_tree_raw$Height_2019[HE_tree_raw$Genus_ID == "Pseudotsuga"] > 8977, na.rm=T) #382
+summary(HE_tree_raw$Diameter_2019[HE_tree_raw$Genus_ID == "Pinus"]) #123
+sum((HE_tree_raw$Diameter_2019[HE_tree_raw$Genus_ID == "Pinus"]/10)^2*HE_tree_raw$Height_2019[HE_tree_raw$Genus_ID == "Pinus"] > 8977, na.rm=T) #858
+
+#calculated based on allometric equations from Annighofer 2016
+data_raw$Plot_Nr <- as.numeric(gsub("\\D", "", data_raw$Plot_ID))
+biomass_HE <- BA_HE_corrected %>%
+  group_by(Plot_ID, Genus_ID) %>%
+  #link in betas
+  mutate(beta1 = case_when(Genus_ID == "Betula" ~ allo_coef$beta1[allo_coef$Species == "Betula pendula"],
+                           Genus_ID %in% c("Pseudotsuga", "Pinus", "Larix") ~ allo_coef$beta1[allo_coef$Species == "Pseudotsuga menziesii"],
+                           Genus_ID == "Quercus" ~ allo_coef$beta1[allo_coef$Species == "Quercus petraea"]),
+         beta2 = case_when(Genus_ID == "Betula" ~ allo_coef$beta2[allo_coef$Species == "Betula pendula"],
+                           Genus_ID %in% c("Pseudotsuga", "Pinus", "Larix") ~ allo_coef$beta2[allo_coef$Species == "Pseudotsuga menziesii"],
+                           Genus_ID == "Quercus" ~ allo_coef$beta2[allo_coef$Species == "Quercus petraea"])) %>%
+  summarise(biomass_g = mean(beta1 * ((Diameter_2019/10) ^ 2 * Height_2019) ^ beta2, na.rm = T)) %>%
+  pivot_wider(names_from = "Genus_ID", values_from = "biomass_g") %>%
+  mutate(Plot_long_ID = paste0("He", Plot_ID)) %>%
+  mutate(n_birch = data_raw$`#_birch`[match(Plot_long_ID, data_raw$Plot_ID)],
+         n_pine = data_raw$`#_pine`[match(Plot_long_ID, data_raw$Plot_ID)],
+         n_oak = data_raw$`#_oak`[match(Plot_long_ID, data_raw$Plot_ID)],
+         n_larch = data_raw$`#_larch`[match(Plot_long_ID, data_raw$Plot_ID)],
+         n_Douglas = data_raw$`#_Douglas`[match(Plot_long_ID, data_raw$Plot_ID)],
+         biomass_total_t = sum(Betula * n_birch, Pinus * n_pine, Pseudotsuga * n_Douglas, Larix * n_larch, Quercus * n_oak, na.rm=T) / 1000 / 1000,
+         biomass_total_t_ha = biomass_total_t / plot_size_he_ha) %>%
+  mutate(Plot_ID_long = paste0("He", Plot_ID))
+
+```
+
+
+Biomass in ZE and HE
+
+```{r}
+#calculated based on allometric equations in Forrester 2017
+
+#tree age per site
+tree_age_HE <- 6
+tree_age_GE <- 9
+tree_age_ZE <- 8
+#number of trees per ha
+TPH <- 784 / plot_size_geze_ha
+# TPH <- 576 / plot_size_he_ha # equal to above
+#latitude
+lat_ZE <- 51.15
+lat_GE <- 50
+lat_HE <- 51.1667
+#mean annual temperature
+temp_ze <- 9.4
+temp_ge <- 6.9
+#precipitation
+prec_ge <- 1021
+
+species_allo <- c("Acer pseudoplatanus", "Betula pendula", "Broad-leaved species", "Conifers", "Fagus sylvatica", "Larix decidua","Pinus sylvestris", "Pseudotuga menziesii", "Quercus petraea Or Q. robur", "Quercus robur")
+
+allo_mat_coef_forbio <- allo_mat_coef %>%
+  filter(Component == "Aboveground" & Species %in% species_allo) %>%
+  rbind(allo_mat_coef %>%
+  filter(Component %in% c("Foliage mass", "Stem + branch mass") & Species %in% "Acer pseudoplatanus")) %>%
+  group_by(Species, Component, Equation) %>%
+  mutate(across(`ln(β0)`:`β for Temperature`, ~strsplit(., "\\s+")[[1]][1] %>% as.numeric()))
+
+allo_mat_coef_he <- rbind(cbind(Genus = "Betula", allo_mat_coef_forbio %>% filter(Species == "Betula pendula")),
+                          cbind(Genus = "Pseudotsuga", allo_mat_coef_forbio %>% filter(Species == "Pseudotuga menziesii")),
+                          cbind(Genus = "Pinus", allo_mat_coef_forbio %>% filter(Species == "Pinus sylvestris")), 
+                          cbind(Genus = "Quercus", allo_mat_coef_forbio %>% filter(Species == "Quercus petraea Or Q. robur")),
+                          cbind(Genus = "Larix", allo_mat_coef_forbio %>% filter(Species == "Larix decidua")))
+
+allo_mat_coef_ze <- rbind(cbind(Genus = "Betula", allo_mat_coef_forbio %>% filter(Species == "Betula pendula")),
+                          cbind(Genus = "Tilia", allo_mat_coef_forbio %>% filter(Species == "Broad-leaved species")),
+                          cbind(Genus = "Pinus", allo_mat_coef_forbio %>% filter(Species == "Pinus sylvestris")), 
+                          cbind(Genus = "Quercus", allo_mat_coef_forbio %>% filter(Species == "Quercus robur")),
+                          cbind(Genus = "Fagus", allo_mat_coef_forbio %>% filter(Species == "Fagus sylvatica")))
+
+allo_mat_coef_ge <- rbind(cbind(Genus = "Acer", allo_mat_coef_forbio %>% filter(Species == "Acer pseudoplatanus")),
+                          cbind(Genus = "Pseudotsuga", allo_mat_coef_forbio %>% filter(Species == "Pseudotuga menziesii")),
+                          cbind(Genus = "Larix", allo_mat_coef_forbio %>% filter(Species == "Larix decidua")), 
+                          cbind(Genus = "Quercus", allo_mat_coef_forbio %>% filter(Species == "Quercus petraea Or Q. robur")),
+                          cbind(Genus = "Fagus", allo_mat_coef_forbio %>% filter(Species == "Fagus sylvatica")))
+
+#biomass in kg
+biomass_ZE <- ZE_tree_raw %>%
+  merge(allo_mat_coef_ze, by.x = "Genus_ID", by.y = "Genus", all.x = T, all.y = T) %>%
+  mutate(biomass_kg = case_when(Equation == 3 ~ exp(`ln(β0)` + `β for ln(d)` * log(`DBH_2018 (mm)` / 10)) * CF,
+                                Equation == 5 ~ exp(`ln(β0)` + `β for ln(d)` * log(`DBH_2018 (mm)` / 10) + `β for ln(Age)` * log(tree_age_ZE)),
+                                Equation == 6 ~ exp(`ln(β0)` + `β for ln(d)` * log(`DBH_2018 (mm)` / 10) + `β for ln(TPH)` * log(TPH)) * CF,
+                                Equation == 20 ~ exp(`ln(β0)` + `β for ln(d)` * log(`DBH_2018 (mm)` / 10) + `β for ln(Age)` * log(tree_age_ZE) + `β for Temperature` * temp_ze)) * CF)
+
+
+biomass_GE <- GE_tree_raw %>%
+  merge(allo_mat_coef_ge, by.x = "Genus_ID", by.y = "Genus", all.x = T, all.y = T) %>%
+  mutate(biomass_kg = case_when(Equation == 3 ~ exp(`ln(β0)` + `β for ln(d)` * log(`DBH_2019` / 10)) * CF,
+                                Equation == 5 ~ exp(`ln(β0)` + `β for ln(d)` * log(`DBH_2019` / 10) + `β for ln(Age)` * log(tree_age_GE)) * CF,
+                                Equation == 6 ~ exp(`ln(β0)` + `β for ln(d)` * log(`DBH_2019` / 10) + `β for ln(TPH)` * log(TPH)) * CF,
+                                Equation == 16 ~ exp(`ln(β0)` + `β for ln(d)` * log(`DBH_2019` / 10) + `β for ln(TPH)` * log(TPH) + `β for Precipitation` * prec_ge ) * CF,
+                                Equation == 17 ~ exp(`ln(β0)` + `β for ln(d)` * log(`DBH_2019` / 10) + `β for ln(TPH)` * log(TPH) + `β for Temperature` * temp_ge) * CF,
+                                Equation == 8 ~ exp(`ln(β0)` + `β for ln(d)` * log(`DBH_2019` / 10) + `β for Precipitation` * prec_ge) * CF))
+
+#add leaves to branches and stem for Acer
+biomass_GE_acer_foliage <- biomass_GE %>%
+  filter(Genus_ID == "Acer" & Component == "Foliage mass")
+biomass_GE_acer <- biomass_GE %>%
+  filter(Genus_ID == "Acer" & Component == "Stem + branch mass") %>%
+  mutate(biomass_foliage = biomass_GE_acer_foliage$biomass_kg[match(Tree_ID, biomass_GE_acer_foliage$Tree_ID)]) %>%
+  mutate(biomass_kg = biomass_kg + biomass_foliage,
+         tree_equation_id = paste(Tree_ID, Equation, sep = "/"))
+#add acer back into biomass_GE
+biomass_GE_new <- biomass_GE %>%
+  mutate(tree_equation_id = paste(Tree_ID, Equation, sep = "/")) %>%
+  mutate(biomass_kg = ifelse(Genus_ID == "Acer", biomass_GE_acer$biomass_kg[match(tree_equation_id, biomass_GE_acer$tree_equation_id)], biomass_kg)) %>%
+  filter(Component != "Foliage mass")
+
+biomass_GE_new %>%
+  filter(Genus_ID != "Larix") %>%
+  ggplot(aes(x = as.factor(Plot_ID), y = biomass_kg, col = as.factor(Equation)))+
+  geom_point() + 
+  facet_grid(. ~ Genus_ID)
+
+#look at variation
+biomass_GE_summary <- biomass_GE_new %>%
+  group_by(Tree_ID, Genus_ID) %>%
+  summarise(mean = mean(biomass_kg, na.rm = T), sd = sd(biomass_kg, na.rm = T)) %>%
+  group_by(Genus_ID) %>%
+  summarise(sd_mean = sd(mean, na.rm = T), min_mean = min(mean, na.rm = T), max_mean = max(mean, na.rm = T), mean_mean = mean(mean, na.rm = T), sd_sd = sd(sd, na.rm = T), min_sd = min(sd, na.rm = T), max_sd = max(sd, na.rm = T), mean_sd = mean(sd, na.rm = T))
+
+biomass_ZE %>%
+  ggplot(aes(x = as.factor(Plot_ID), y = biomass_kg, col = as.factor(Equation)))+
+  geom_point() + 
+  facet_grid(. ~ Genus_ID)
+
+#look at variation
+biomass_ZE_summary <- biomass_ZE %>%
+  group_by(Tree_ID, Genus_ID) %>%
+  summarise(mean = mean(biomass_kg, na.rm = T), sd = sd(biomass_kg, na.rm = T)) %>%
+  group_by(Genus_ID) %>%
+  summarise(sd_mean = sd(mean, na.rm = T), min_mean = min(mean, na.rm = T), max_mean = max(mean, na.rm = T), mean_mean = mean(mean, na.rm = T), sd_sd = sd(sd, na.rm = T), min_sd = min(sd, na.rm = T), max_sd = max(sd, na.rm = T), mean_sd = mean(sd, na.rm = T))
+```
+
+Decide to only use equation 3
+
+```{r}
+#calculate total biomass per plot
+#start by calculating mean per species
+#than multiply by number of trees of that species
+#than devide by area
+biomass_ZE_touse <- biomass_ZE %>% 
+  #make sure biomass for dead trees == 0 and not NA
+  mutate(biomass_kg = ifelse(is.na(biomass_kg), 0, biomass_kg)) %>%
+  filter(Equation == 3) %>%
+  group_by(Plot_ID, Genus_ID) %>%
+  summarise(biomass_kg = mean(biomass_kg, na.rm = T)) %>%
+  pivot_wider(names_from = Genus_ID, values_from = biomass_kg) %>%
+  mutate(Plot_ID_long = paste0("Ze", Plot_ID)) %>%
+  merge(data_raw %>% filter(Time == "old") %>% dplyr::select(Plot_ID, `#_birch`,`#_beech`, `#_pine`, `#_oak`, `#_lime`), by.x = "Plot_ID_long", by.y = "Plot_ID") %>%
+  group_by(Plot_ID) %>%
+  mutate(Betula_biomass = Betula * `#_birch` / 1000 / plot_size_geze_ha, # t / ha
+         Fagus_biomass = Fagus * `#_beech` / 1000 / plot_size_geze_ha,
+         Pinus_biomass = Pinus * `#_pine` / 1000 / plot_size_geze_ha,
+         Quercus_biomass = Quercus * `#_oak` / 1000 / plot_size_geze_ha,
+         Tilia_biomass = Tilia * `#_lime` / 1000 / plot_size_geze_ha,
+         total_biomass = sum(Betula_biomass, Fagus_biomass, Pinus_biomass, Quercus_biomass, Tilia_biomass, na.rm = T))
+
+
+biomass_GE_touse <- biomass_GE_new %>% 
+    #make sure biomass for dead trees == 0 and not NA
+  mutate(biomass_kg = ifelse(is.na(biomass_kg), 0, biomass_kg)) %>%
+  filter(Equation == 3) %>%
+  group_by(Plot_ID, Genus_ID) %>%
+  summarise(biomass_kg = mean(biomass_kg, na.rm = T)) %>%
+  pivot_wider(names_from = Genus_ID, values_from = biomass_kg) %>%
+  mutate(Plot_ID_long = paste0("Ge", Plot_ID)) %>%
+  merge(data_raw %>% filter(Time == "old") %>% dplyr::select(Plot_ID, `#_maple`,`#_beech`, `#_larch`, `#_Douglas`, `#_oak`), by.x = "Plot_ID_long", by.y = "Plot_ID") %>%
+  group_by(Plot_ID) %>%
+  mutate(Acer_biomass = Acer * `#_maple` / 1000 / plot_size_geze_ha, # t / ha
+         Fagus_biomass = Fagus * `#_beech` / 1000 / plot_size_geze_ha,
+         Larix_biomass = Larix * `#_larch` / 1000 / plot_size_geze_ha,
+         Quercus_biomass = Quercus * `#_oak` / 1000 / plot_size_geze_ha,
+         Pseudotsuga_biomass = Pseudotsuga * `#_Douglas` / 1000 / plot_size_geze_ha,
+         total_biomass = sum(Acer_biomass, Fagus_biomass, Larix_biomass, Quercus_biomass, Pseudotsuga_biomass, na.rm = T))
+```
+
+
+
+### Diversity metrics
+
+```{r}
+#diversity metrics - initial
+data <- data %>%
+  mutate(year_id = paste0(Year, Plot_ID)) %>%
+  group_by(year_id) %>%
+  mutate(species_composition_initial = species_comp$species_composition_words[match(year_id, species_comp$year_ID)],
+         species_composition_observed = species_composition_initial,
+         Shannon_initial = -sum(c(`#_beech`/`#_Tree_Total`*log(`#_beech`/`#_Tree_Total`),
+                                 `#_oak`/`#_Tree_Total`*log(`#_oak`/`#_Tree_Total`),
+                                 `#_birch`/`#_Tree_Total`*log(`#_birch`/`#_Tree_Total`),
+                                 `#_lime`/`#_Tree_Total`*log(`#_lime`/`#_Tree_Total`),
+                                 `#_pine`/`#_Tree_Total`*log(`#_pine`/`#_Tree_Total`),
+                                 `#_larch`/`#_Tree_Total`*log(`#_larch`/`#_Tree_Total`),
+                                 `#_maple`/`#_Tree_Total`*log(`#_maple`/`#_Tree_Total`),
+                                 `#_Douglas`/`#_Tree_Total`*log(`#_Douglas`/`#_Tree_Total`)),
+                               na.rm=T),
+         evenness_initial = Shannon_initial / log10(sp_nr) )
+  
+#Basal area 2018
+#based on calculations in previous section
+BA_full_relative <- BA_full %>%
+  mutate(across(BA_Betula:BA_Acer, ~ . / BA_m2_ha_total))
+
+data_observed <- data %>% 
+  merge(BA_full_relative[, c("Plot_ID_long", "BA_Acer", "BA_Betula", "BA_Fagus", "BA_Larix", "BA_Pinus", "BA_Pseudotsuga", "BA_Quercus", "BA_Tilia")], by.x = "Plot_ID", by.y = "Plot_ID_long") %>%
+  group_by(year_id) %>%
+  mutate(Shannon_observed = -sum(c(BA_Acer*log(BA_Acer),
+                                 BA_Betula*log(BA_Betula),
+                                 BA_Fagus*log(BA_Fagus),
+                                 BA_Larix*log(BA_Larix),
+                                 BA_Pinus*log(BA_Pinus),
+                                 BA_Pseudotsuga*log(BA_Pseudotsuga),
+                                 BA_Quercus*log(BA_Quercus),
+                                 BA_Tilia*log(BA_Tilia)),
+                                 na.rm=T),
+         species_richness_observed = sp_nr,
+         evenness_observed = Shannon_observed / log10(species_richness_observed)) %>%
+  #update observed for old years, as the observed = initial
+  mutate(Shannon_observed = case_when(Year < 2018 ~ Shannon_initial,
+                                      .default = Shannon_observed),
+         evenness_observed = case_when(Year < 2018 ~ evenness_initial,
+                                       .default = evenness_observed),
+         country = "Belgium",
+         sampling_depth = 10)
+
+```
+
+Split data and filter only data for 2018, add initial C metrics back in as initial values
+
+```{r}
+#select C initial as this is asked separately
+data_init <- data_observed %>%
+  filter(Year < 2018)
+
+#filter only 2018 data; add in initial C
+data_2018 <- data_observed %>%
+  filter(Year >= 2018) %>%
+  mutate(C_init = data_init$C[match(Plot_ID, data_init$Plot_ID)])
+```
+
+### Vegetation biomass:
+
+$DW=a*C^b*SL^c$, with $DW$ is dry weight (g/m2), $C$ is cover (%), $SL$ is mean shoot length (cm).
+
+Note: converting <1 to 0.5.
+
+```{r}
+#calculate mean shoot length
+#we assume it to be the middle of the shoot length range as we do not have shoot length measurements
+phytocalc_derived <- phytocalc %>%
+  mutate(shoot_length = (shoot_length_upper_range_cm - shoot_length_lower_range_cm)/2 + shoot_length_lower_range_cm)
+
+#no coefs for tree seedlings
+#how much do they take up in the cover?
+test <- MFC_veg_raw %>%
+  mutate(across(SH:`T`, ~as.numeric(ifelse(. == "<1", 0.5, .)))) %>%
+  group_by(Site, Plot) %>%
+  mutate(tree_seedling_cover_perc = `T` / sum(SH, MH, TH, SG, MG, TG, `F`, TF, DS, SS, PM, MM, DM, `T`, na.rm=T)) #up to 1.5 percent in "combined" cover
+test <- drforest_veg_raw %>%
+    group_by(Site, Plot, Subplot) %>%
+  mutate(across(SH:`T`, ~as.numeric(ifelse(. == "<1", 0.5, .)))) %>%
+  mutate(tree_seedling_cover_perc = `T` / sum(SH, MH, TH, SG, MG, TG, `F`, TF, DS, SS, PM, MM, DM, `T`, na.rm=T))
+
+#MFC
+#calculate mean of biomass (after calculating biomass from covers), not averaging covers and then calculating biomass
+MFC_veg <-  MFC_veg_raw %>%
+  mutate(across(SH:`T`, ~as.numeric(ifelse(. == "<1", 0.5, .)))) %>%
+  pivot_longer(cols = SH:`T`, names_to = "morphological_group", values_to = "cover_perc") %>%
+  merge(phytocalc_derived[, c("morphological_group_code", "shoot_length", "a", "b", "c")], by.x = "morphological_group", by.y = "morphological_group_code", all.x = T) %>%
+  mutate(dryweight_g_m2 = a * cover_perc ^ b * shoot_length ^ c) %>%
+  group_by(Site, Plot) %>%
+  summarise(dryweight_g_m2 = sum(dryweight_g_m2, na.rm=T)) %>%
+  mutate(plot_unique = paste0(Site, Plot))
+
+#DrForest
+#calculate mean of biomass (after calculating biomass from covers), not averaging covers and then calculating biomass
+drforest_veg <-  drforest_veg_raw %>%
+  mutate(across(SH:`T`, ~as.numeric(ifelse(. == "<1", 0.5, .)))) %>%
+  pivot_longer(cols = SH:`T`, names_to = "morphological_group", values_to = "cover_perc") %>%
+  merge(phytocalc_derived[, c("morphological_group_code", "shoot_length", "a", "b", "c")], by.x = "morphological_group", by.y = "morphological_group_code", all.x = T) %>%
+  mutate(dryweight_g_m2 = a * cover_perc ^ b * shoot_length ^ c) %>%
+  group_by(Site, Plot, Subplot) %>%
+  summarise(dryweight_g_m2 = sum(dryweight_g_m2, na.rm=T)) %>%
+  group_by(Site, Plot) %>%
+  summarise(dryweight_g_m2 = mean(dryweight_g_m2, na.rm = T)) %>%
+  mutate(plot_unique = paste0(Site, Plot))
+
+
+#merge datasets
+veg <- merge(drforest_veg, MFC_veg, by = "plot_unique", all.x = T, all.y = T)
+
+#overlapping plots: we calculate the mean
+veg <- veg %>%
+  group_by(plot_unique) %>%
+  mutate(dryweight_g_m2 = mean(c(dryweight_g_m2.x, dryweight_g_m2.y), na.rm = T))
+```
+
+Add data to data_2018
+
+```{r}
+data_2018 <- data_2018 %>%
+  mutate(Plot_ID_upper = toupper(Plot_ID),
+         veg_dryweight_g_m2 = veg$dryweight_g_m2[match(Plot_ID_upper, veg$plot_unique)])
+```
+
+
+### Litter
+
+Litter was collected throughout the season, so samples need to be summed to have a full sample
+
+Where multiple buckets, these need be accounted for (summed bucket area)
+
+```{r}
+#diameter = 30cm
+#calculate surface area
+bucket_diam_cm <- 30
+bucket_area_m2 <- pi * (bucket_diam_cm/2) ^ 2 / 100 / 100
+
+litter <- litter_raw %>%
+  #check if MFC and DrForest are in separate plot, or whether there are also overlapping plots
+  #similarly checking if number of buckets is consistent throughout sampling points
+  group_by(Site, Plot_ID) %>%
+  summarise(test_overlapping_projects = length(unique(VIP)) == 1, test_bucket_numbers = length(unique(Number_traps)) == 1)
+litter$test_overlapping_projects %>% all()
+litter$test_bucket_numbers %>% all
+
+#making sure to put NA if all NA and not make it 0
+litter <- litter_raw %>%
+  group_by(Site, Plot_ID) %>%
+  summarise(sum_biomass_per_bucket = ifelse(all(is.na(Biomass)), NA, sum(Biomass / Number_traps, na.rm = T))) %>%
+  mutate(biomass_g_m2 = sum_biomass_per_bucket / bucket_area_m2) %>%
+  mutate(plot_unique = paste0(Site, Plot_ID))
+```
+
+Add data to data_2018
+
+```{r}
+data_2018 <- data_2018 %>%
+  mutate(litter_dryweight_g_m2 = litter$biomass_g_m2[match(Plot_ID_upper, veg$plot_unique)])
+```
+
+### tree biomass
+
+Calculated above, here just adding to data_2018
+
+```{r}
+data_2018 <- data_2018 %>%
+  mutate(aboveground_biomass_t_ha = case_when(Site == "Gedinne" ~ biomass_GE_touse$total_biomass[match(Plot_ID, biomass_GE_touse$Plot_ID_long)],
+                                              Site == "Zedelgem" ~ biomass_ZE_touse$total_biomass[match(Plot_ID, biomass_ZE_touse$Plot_ID_long)],
+                                              Site == "Hechtel-Eksel" ~ biomass_HE$biomass_total_t_ha[match(Plot_ID, biomass_HE$Plot_ID_long)]))
+```
+
+
+
+## Reorder columns
+
+```{r}
+chem_methods <- "C & N: total C combustion at 1150 degrees C; P: Olsen (extraction in NaHCO3 - ISO 11,263:1994(E)); K: atomic absorption spectrophotometry (AA240FS, Fast Sequential AAS) after extraction in 0.1 M BaCl2 (according to NEN 5738:1996)"
+
+#select cols of interest
+data_final <- data_2018 %>%
+  mutate(pH_method = "water",
+         sampling_date = case_when(Site == "Gedinne" ~ as.Date("22/02/2019", format = "%d/%m/%Y"),
+                               Site == "Zedelgem" ~ as.Date("01/10/2019", format = "%d/%m/%Y"),
+                               Site == "Hechtel-Eksel" ~ as.Date("21/11/2018", format = "%d/%m/%Y")),
+         stand_age = case_when(Site == "Gedinne" ~ tree_age_GE,
+                               Site == "Zedelgem" ~ tree_age_ZE,
+                               Site == "Hechtel-Eksel" ~ tree_age_HE),
+         moisture = NA,
+         C.N = C/N,
+         bulk_density = NA,
+         C_stock = NA,
+         nitrate = NA,
+         ammonium = NA,
+         nutrient_methods = chem_methods,
+         aboveground_biomass = aboveground_biomass_t_ha,
+         litter_quantity = litter_dryweight_g_m2,
+         litter_CN = NA,
+         groundcover_biomass = veg_dryweight_g_m2,
+         comments = NA) %>%
+  ungroup() %>%
+  dplyr::select(Site, country, plot_number, Block_ID, treatment, sp_nr,
+                species_composition_initial, evenness_initial, Shannon_initial, 
+                C_init, Year, sampling_date, stand_age, species_richness_observed,
+                species_composition_observed, evenness_observed, Shannon_observed, sampling_depth,
+                C, bulk_density, C_stock, pH_H2O, pH_method, moisture, N, C.N, nitrate, ammonium, Olsen_P, K,
+                nutrient_methods, aboveground_biomass, litter_quantity, litter_CN, groundcover_biomass,
+                comments)
+
+  
+#export data
+write.csv(data_final, paste0(data_path, "C_data_for_Elina.csv"))
+
+```
+
