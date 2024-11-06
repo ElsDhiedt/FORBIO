@@ -13,8 +13,14 @@ library(readxl) #reading xlsx files
 ```
 
 ```{r path}
-#folder where data sits
+#folder where input data sits
 data_path <- "C:/Users/elsdhi/OneDrive - UKCEH/Documents/UGent/TreeDivNet/data/"
+
+#folder where output data goes
+out_path <- "C:/Users/elsdhi/OneDrive - UKCEH/Documents/UGent/TreeDivNet/output data/"
+
+#verioning
+date <- "20241106" #date
 
 #soil analyses
 file_path <- paste0(data_path, "Bodemanalysen.xlsx")
@@ -282,7 +288,7 @@ biomass_HE <- BA_HE_corrected %>%
 ```
 
 
-Biomass in ZE and HE
+Biomass in ZE and GE
 
 ```{r}
 #calculated based on allometric equations in Forrester 2017
@@ -374,7 +380,7 @@ biomass_GE_summary <- biomass_GE_new %>%
   group_by(Tree_ID, Genus_ID) %>%
   summarise(mean = mean(biomass_kg, na.rm = T), sd = sd(biomass_kg, na.rm = T)) %>%
   group_by(Genus_ID) %>%
-  summarise(sd_mean = sd(mean, na.rm = T), min_mean = min(mean, na.rm = T), max_mean = max(mean, na.rm = T), mean_mean = mean(mean, na.rm = T), sd_sd = sd(sd, na.rm = T), min_sd = min(sd, na.rm = T), max_sd = max(sd, na.rm = T), mean_sd = mean(sd, na.rm = T))
+  summarise(sd_mean = sd(mean, na.rm = T), min_mean = min(mean, na.rm = T), max_mean = max(mean, na.rm = T), mean_mean = mean(mean, na.rm = T), sd_sd = sd(sd, na.rm = T), min_sd = min(sd, na.rm = T), max_sd = max(sd, na.rm = T), mean_sd = mean(sd, na.rm = T))  
 
 biomass_ZE %>%
   ggplot(aes(x = as.factor(Plot_ID), y = biomass_kg, col = as.factor(Equation)))+
@@ -429,12 +435,16 @@ biomass_GE_touse <- biomass_GE_new %>%
          Larix_biomass = Larix * `#_larch` / 1000 / plot_size_geze_ha,
          Quercus_biomass = Quercus * `#_oak` / 1000 / plot_size_geze_ha,
          Pseudotsuga_biomass = Pseudotsuga * `#_Douglas` / 1000 / plot_size_geze_ha,
-         total_biomass = sum(Acer_biomass, Fagus_biomass, Larix_biomass, Quercus_biomass, Pseudotsuga_biomass, na.rm = T))
+         total_biomass = sum(Acer_biomass, Fagus_biomass, Larix_biomass, Quercus_biomass, Pseudotsuga_biomass, na.rm = T)) %>%
+  #plot 2 and 8 are zero, but should be NA as there is no data, but biomass (tiny little trees)
+  mutate(total_biomass = ifelse(Plot_ID %in% c(2, 8), NA, total_biomass))
 ```
 
 
 
 ### Diversity metrics
+
+We assume 0 evenness where monoculture (mathematically: 0/0)
 
 ```{r}
 #diversity metrics - initial
@@ -452,7 +462,7 @@ data <- data %>%
                                  `#_maple`/`#_Tree_Total`*log(`#_maple`/`#_Tree_Total`),
                                  `#_Douglas`/`#_Tree_Total`*log(`#_Douglas`/`#_Tree_Total`)),
                                na.rm=T),
-         evenness_initial = Shannon_initial / log10(sp_nr) )
+         evenness_initial = ifelse(sp_nr==1, 0, Shannon_initial / log10(sp_nr) ) ) #assign 0 where monoculture
   
 #Basal area 2018
 #based on calculations in previous section
@@ -472,7 +482,7 @@ data_observed <- data %>%
                                  BA_Tilia*log(BA_Tilia)),
                                  na.rm=T),
          species_richness_observed = sp_nr,
-         evenness_observed = Shannon_observed / log10(species_richness_observed)) %>%
+         evenness_observed = ifelse(sp_nr == 1, 0, Shannon_observed / log10(species_richness_observed))) %>%
   #update observed for old years, as the observed = initial
   mutate(Shannon_observed = case_when(Year < 2018 ~ Shannon_initial,
                                       .default = Shannon_observed),
@@ -500,13 +510,19 @@ data_2018 <- data_observed %>%
 
 $DW=a*C^b*SL^c$, with $DW$ is dry weight (g/m2), $C$ is cover (%), $SL$ is mean shoot length (cm).
 
-Note: converting <1 to 0.5.
+Note:
+
+* converting <1 to 0.5.
+* using dwarf shrub coefficients for tree seedlings
 
 ```{r}
 #calculate mean shoot length
 #we assume it to be the middle of the shoot length range as we do not have shoot length measurements
 phytocalc_derived <- phytocalc %>%
-  mutate(shoot_length = (shoot_length_upper_range_cm - shoot_length_lower_range_cm)/2 + shoot_length_lower_range_cm)
+  mutate(shoot_length = (shoot_length_upper_range_cm - shoot_length_lower_range_cm)/2 + shoot_length_lower_range_cm) %>%
+  rbind(phytocalc %>% filter(morphological_group == "Dwarf shrub") %>% mutate(morphological_group = "Tree seedling",
+                                                                              morphological_group_code = "T",
+                                                                              shoot_length = (shoot_length_upper_range_cm - shoot_length_lower_range_cm)/2 + shoot_length_lower_range_cm)) #add tree seedling (with dwarfshrub coefs) to the lookup table
 
 #no coefs for tree seedlings
 #how much do they take up in the cover?
@@ -522,7 +538,7 @@ test <- drforest_veg_raw %>%
 #MFC
 #calculate mean of biomass (after calculating biomass from covers), not averaging covers and then calculating biomass
 MFC_veg <-  MFC_veg_raw %>%
-  mutate(across(SH:`T`, ~as.numeric(ifelse(. == "<1", 0.5, .)))) %>%
+  mutate(across(SH:`T`, ~as.numeric(ifelse(. %in% c("<1", "<"), 0.5, .)))) %>%
   pivot_longer(cols = SH:`T`, names_to = "morphological_group", values_to = "cover_perc") %>%
   merge(phytocalc_derived[, c("morphological_group_code", "shoot_length", "a", "b", "c")], by.x = "morphological_group", by.y = "morphological_group_code", all.x = T) %>%
   mutate(dryweight_g_m2 = a * cover_perc ^ b * shoot_length ^ c) %>%
@@ -533,7 +549,7 @@ MFC_veg <-  MFC_veg_raw %>%
 #DrForest
 #calculate mean of biomass (after calculating biomass from covers), not averaging covers and then calculating biomass
 drforest_veg <-  drforest_veg_raw %>%
-  mutate(across(SH:`T`, ~as.numeric(ifelse(. == "<1", 0.5, .)))) %>%
+  mutate(across(SH:`T`, ~as.numeric(ifelse(. %in% c("<1", "<", "<5"), 0.5, .)))) %>%
   pivot_longer(cols = SH:`T`, names_to = "morphological_group", values_to = "cover_perc") %>%
   merge(phytocalc_derived[, c("morphological_group_code", "shoot_length", "a", "b", "c")], by.x = "morphological_group", by.y = "morphological_group_code", all.x = T) %>%
   mutate(dryweight_g_m2 = a * cover_perc ^ b * shoot_length ^ c) %>%
@@ -647,7 +663,7 @@ data_final <- data_2018 %>%
 
   
 #export data
-write.csv(data_final, paste0(data_path, "C_data_for_Elina.csv"))
+write.csv(data_final, paste0(out_path, "C_data_for_Elina_", date, ".csv"))
 
 ```
 
