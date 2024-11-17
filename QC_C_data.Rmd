@@ -18,7 +18,7 @@ library(flextable) #pretty tables
 in_path <- "C:/Users/elsdhi/OneDrive - UKCEH/Documents/UGent/TreeDivNet/output data/"
 
 #versioning
-date <- "20241106"
+date <- "20241117"
 
 #file name
 filename <- paste0("C_data_for_Elina_", date, ".csv")
@@ -107,11 +107,20 @@ data <- data %>%
                              Site == "Zedelgem" ~ "ZE"), plot_number))
 #veg
 (data$Plot_ID[!is.na(data$groundcover_biomass)] %in% veg_IDs) %>% all()
-!(data$Plot_ID[is.na(data$groundcover_biomass)] %in% veg_IDs) %>% all()
+(!(data$Plot_ID[is.na(data$groundcover_biomass)] %in% veg_IDs)) %>% all()
 
 #litter
-(data$Plot_ID[!is.na(data$litter_quanity)] %in% litter_IDs) %>% all()
-!(data$Plot_ID[is.na(data$litter_quantity)] %in% litter_IDs) %>% all()
+(data$Plot_ID[!is.na(data$litter_quantity)] %in% litter_IDs) %>% all()
+(!(data$Plot_ID[is.na(data$litter_quantity)] %in% litter_IDs)) %>% all()
+data$Plot_ID[is.na(data$litter_quantity)][!(!(data$Plot_ID[is.na(data$litter_quantity)] %in% litter_IDs))] #GE2 ok!
 ```
 
+## Check versions
+
+```{r}
+v1 <- read.csv("C:/Users/elsdhi/OneDrive - UKCEH/Documents/UGent/TreeDivNet/output data/C_data_for_Elina_20241106.csv")
+v2 <- read.csv("C:/Users/elsdhi/OneDrive - UKCEH/Documents/UGent/TreeDivNet/output data/C_data_for_Elina_20241117.csv")
+
+(v1 %>% dplyr::select(-c(bulk_density, comments)) == v2 %>% dplyr::select(-bulk_density)) %>% all(na.rm=T)
+```
 

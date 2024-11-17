@@ -20,7 +20,7 @@ data_path <- "C:/Users/elsdhi/OneDrive - UKCEH/Documents/UGent/TreeDivNet/data/"
 out_path <- "C:/Users/elsdhi/OneDrive - UKCEH/Documents/UGent/TreeDivNet/output data/"
 
 #verioning
-date <- "20241106" #date
+date <- "20241117" #date
 
 #soil analyses
 file_path <- paste0(data_path, "Bodemanalysen.xlsx")
@@ -610,7 +610,7 @@ Add data to data_2018
 
 ```{r}
 data_2018 <- data_2018 %>%
-  mutate(litter_dryweight_g_m2 = litter$biomass_g_m2[match(Plot_ID_upper, veg$plot_unique)])
+  mutate(litter_dryweight_g_m2 = litter$biomass_g_m2[match(Plot_ID_upper, litter$plot_unique)])
 ```
 
 ### tree biomass
@@ -624,6 +624,17 @@ data_2018 <- data_2018 %>%
                                               Site == "Hechtel-Eksel" ~ biomass_HE$biomass_total_t_ha[match(Plot_ID, biomass_HE$Plot_ID_long)]))
 ```
 
+### Bulk density
+
+Only data on site level
+
+```{r}
+data_2018 <- data_2018 %>%
+  mutate(bulk_density = case_when(Site == "Gedinne" & Block_ID == 1 ~ 0.45,
+                                  Site == "Gedinne" & Block_ID == 2 ~ 0.67,
+                                  Site == "Hechtel-Eksel" ~ 1.34,
+                                  Site == "Zedelgem" ~ 1.29))
+```
 
 
 ## Reorder columns
@@ -642,7 +653,6 @@ data_final <- data_2018 %>%
                                Site == "Hechtel-Eksel" ~ tree_age_HE),
          moisture = NA,
          C.N = C/N,
-         bulk_density = NA,
          C_stock = NA,
          nitrate = NA,
          ammonium = NA,
@@ -650,16 +660,14 @@ data_final <- data_2018 %>%
          aboveground_biomass = aboveground_biomass_t_ha,
          litter_quantity = litter_dryweight_g_m2,
          litter_CN = NA,
-         groundcover_biomass = veg_dryweight_g_m2,
-         comments = NA) %>%
+         groundcover_biomass = veg_dryweight_g_m2) %>%
   ungroup() %>%
   dplyr::select(Site, country, plot_number, Block_ID, treatment, sp_nr,
                 species_composition_initial, evenness_initial, Shannon_initial, 
                 C_init, Year, sampling_date, stand_age, species_richness_observed,
                 species_composition_observed, evenness_observed, Shannon_observed, sampling_depth,
                 C, bulk_density, C_stock, pH_H2O, pH_method, moisture, N, C.N, nitrate, ammonium, Olsen_P, K,
-                nutrient_methods, aboveground_biomass, litter_quantity, litter_CN, groundcover_biomass,
-                comments)
+                nutrient_methods, aboveground_biomass, litter_quantity, litter_CN, groundcover_biomass)
 
   
 #export data
